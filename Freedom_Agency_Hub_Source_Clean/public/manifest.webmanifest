@@ -1,0 +1,9 @@
+{
+  "name": "Freedom Agency Hub",
+  "short_name": "Freedom Hub",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#dcb34d",
+  "icons": []
+}
