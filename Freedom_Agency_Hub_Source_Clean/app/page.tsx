@@ -11,11 +11,24 @@ type Customer = {
   status: "Active" | "Quoted" | "Cancel Notice" | "New";
 };
 
+type AgencyDocument = {
+  id: string;
+  original_filename: string;
+  storage_path: string;
+  mime_type: string;
+  file_size: number;
+  created_at: string;
+  customers: { full_name: string } | null;
+};
+
 export default function Home() {
   const [section, setSection] = useState("Dashboard");
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState("");
   const [showCustomer, setShowCustomer] = useState(false);
+  const [documents, setDocuments] = useState<AgencyDocument[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [documentMessage, setDocumentMessage] = useState("");
 
   const filtered = useMemo(
     () => customers.filter(c => `${c.name} ${c.phone} ${c.carrier}`.toLowerCase().includes(search.toLowerCase())),
@@ -32,6 +45,14 @@ export default function Home() {
     });
   }, []);
 
+  useEffect(() => {
+    if (section !== "Documents") return;
+    createClient().from("documents")
+      .select("id,original_filename,storage_path,mime_type,file_size,created_at,customers(full_name)")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => setDocuments((data ?? []) as unknown as AgencyDocument[]));
+  }, [section]);
+
   async function addCustomer(formData: FormData) {
     const name = String(formData.get("name") || "").trim();
     const phone = String(formData.get("phone") || "").trim();
@@ -46,12 +67,52 @@ export default function Home() {
     setShowCustomer(false);
   }
 
+  async function uploadDocument(formData: FormData) {
+    const customerId = String(formData.get("customer_id") || "");
+    const file = formData.get("document");
+    if (!(file instanceof File) || !customerId) return;
+    const allowed = ["application/pdf", "image/jpeg", "image/png"];
+    if (!allowed.includes(file.type) || file.size > 10485760) {
+      setDocumentMessage("Choose a PDF, JPG, or PNG file no larger than 10 MB.");
+      return;
+    }
+    setUploading(true); setDocumentMessage("");
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    const { data: profile } = user
+      ? await supabase.from("profiles").select("agency_id").eq("id", user.id).single()
+      : { data: null };
+    if (!user || !profile) { setUploading(false); return; }
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const storagePath = `${profile.agency_id}/${customerId}/${crypto.randomUUID()}-${safeName}`;
+    const { error: uploadError } = await supabase.storage.from("agency-documents").upload(storagePath, file, { upsert: false });
+    if (uploadError) { setDocumentMessage(uploadError.message); setUploading(false); return; }
+    const { data, error } = await supabase.from("documents").insert({
+      agency_id: profile.agency_id, customer_id: customerId, storage_path: storagePath,
+      original_filename: file.name, mime_type: file.type, file_size: file.size, uploaded_by: user.id,
+    }).select("id,original_filename,storage_path,mime_type,file_size,created_at,customers(full_name)").single();
+    if (error) {
+      await supabase.storage.from("agency-documents").remove([storagePath]);
+      setDocumentMessage(error.message);
+    } else if (data) {
+      setDocuments(prev => [data as unknown as AgencyDocument, ...prev]);
+      setDocumentMessage("Document uploaded securely.");
+    }
+    setUploading(false);
+  }
+
+  async function openDocument(path: string) {
+    const { data, error } = await createClient().storage.from("agency-documents").createSignedUrl(path, 60);
+    if (error) { setDocumentMessage(error.message); return; }
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  }
+
   return (
     <main className="shell">
       <aside>
         <div className="brand"><div className="logo">F</div><div><b>Freedom Agency Hub</b><span>Freedom Auto Insurance</span></div></div>
         <nav>
-          {["Dashboard","Customers","Quotes","Policies","Payments","Tasks"].map(item =>
+          {["Dashboard","Customers","Documents","Quotes","Policies","Payments","Tasks"].map(item =>
             <button key={item} className={section === item ? "active" : ""} onClick={() => setSection(item)}>{item}</button>
           )}
         </nav>
@@ -82,7 +143,27 @@ export default function Home() {
           <CustomerTable customers={filtered} />
         </div>}
 
-        {section !== "Dashboard" && section !== "Customers" && <div className="panel empty">
+        {section === "Documents" && <>
+          <div className="panel">
+            <h2>Secure Document Upload</h2>
+            <p className="muted">PDF, JPG, or PNG only. Maximum 10 MB.</p>
+            <form action={uploadDocument} className="document-form">
+              <label>Customer<select name="customer_id" required defaultValue=""><option value="" disabled>Select a customer</option>{customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
+              <label>Document<input name="document" type="file" accept="application/pdf,image/jpeg,image/png" required /></label>
+              <button className="gold" disabled={uploading}>{uploading ? "Uploading…" : "Upload securely"}</button>
+            </form>
+            {documentMessage && <p className="document-message" role="status">{documentMessage}</p>}
+          </div>
+          <div className="panel"><h2>Customer Documents</h2><div className="document-list">
+            {documents.length === 0 && <p className="muted">No documents uploaded.</p>}
+            {documents.map(document => <div className="document-row" key={document.id}>
+              <div><b>{document.original_filename}</b><span>{document.customers?.full_name ?? "Customer"} · {(document.file_size / 1048576).toFixed(2)} MB</span></div>
+              <button className="logout" onClick={() => openDocument(document.storage_path)}>Open</button>
+            </div>)}
+          </div></div>
+        </>}
+
+        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && <div className="panel empty">
           <h2>{section}</h2>
           <p>This production module is scaffolded and ready to connect to Supabase.</p>
         </div>}
