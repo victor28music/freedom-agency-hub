@@ -48,6 +48,19 @@ type Policy = {
   customers: { full_name: string } | null;
 };
 
+type Payment = {
+  id: string;
+  receipt_number: string | null;
+  amount: number;
+  agency_fee: number;
+  carrier_payment: number;
+  method: string | null;
+  notes: string | null;
+  status: "posted" | "voided";
+  created_at: string;
+  customers: { full_name: string } | null;
+};
+
 export default function Home() {
   const [section, setSection] = useState("Dashboard");
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -61,6 +74,9 @@ export default function Home() {
   const [quoteMessage, setQuoteMessage] = useState("");
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [policyMessage, setPolicyMessage] = useState("");
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [paymentMessage, setPaymentMessage] = useState("");
+  const [selectedReceipt, setSelectedReceipt] = useState<Payment | null>(null);
 
   const filtered = useMemo(
     () => customers.filter(c => `${c.name} ${c.phone} ${c.carrier}`.toLowerCase().includes(search.toLowerCase())),
@@ -88,6 +104,14 @@ export default function Home() {
       .select("id,original_filename,storage_path,mime_type,file_size,created_at,customers(full_name)")
       .order("created_at", { ascending: false })
       .then(({ data }) => setDocuments((data ?? []) as unknown as AgencyDocument[]));
+  }, [section]);
+
+  useEffect(() => {
+    if (section !== "Payments") return;
+    createClient().from("payments")
+      .select("id,receipt_number,amount,agency_fee,carrier_payment,method,notes,status,created_at,customers(full_name)")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => setPayments((data ?? []) as unknown as Payment[]));
   }, [section]);
 
   useEffect(() => {
@@ -238,6 +262,44 @@ export default function Home() {
     setPolicies(prev => prev.map(policy => policy.id === id ? { ...policy, status } : policy));
   }
 
+  async function addPayment(formData: FormData) {
+    setPaymentMessage("");
+    const carrierPayment = Number(formData.get("carrier_payment"));
+    const agencyFee = Number(formData.get("agency_fee"));
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    const { data: profile } = user ? await supabase.from("profiles").select("agency_id").eq("id", user.id).single() : { data: null };
+    if (!user || !profile) return;
+    const receiptNumber = `FAH-${Date.now().toString(36).toUpperCase()}`;
+    const { data, error } = await supabase.from("payments").insert({
+      agency_id: profile.agency_id,
+      customer_id: String(formData.get("customer_id")),
+      amount: carrierPayment + agencyFee,
+      carrier_payment: carrierPayment,
+      agency_fee: agencyFee,
+      method: String(formData.get("method")),
+      notes: String(formData.get("notes") || "").trim() || null,
+      received_by: user.id,
+      receipt_number: receiptNumber,
+      status: "posted",
+    }).select("id,receipt_number,amount,agency_fee,carrier_payment,method,notes,status,created_at,customers(full_name)").single();
+    if (error) { setPaymentMessage(error.message); return; }
+    if (data) { const payment = data as unknown as Payment; setPayments(prev => [payment,...prev]); setSelectedReceipt(payment); }
+    setPaymentMessage("Payment recorded. Receipt ready.");
+  }
+
+  async function voidPayment(payment: Payment) {
+    const reason = window.prompt("Reason for voiding this payment:");
+    if (!reason?.trim()) return;
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const { error } = await supabase.from("payments").update({ status: "voided", void_reason: reason.trim(), voided_by: user.id, voided_at: new Date().toISOString() }).eq("id", payment.id);
+    if (error) { setPaymentMessage(error.message); return; }
+    setPayments(prev => prev.map(item => item.id === payment.id ? { ...item, status: "voided" } : item));
+    setPaymentMessage("Payment voided. The original record remains in the audit trail.");
+  }
+
   return (
     <main className="shell">
       <aside>
@@ -342,7 +404,28 @@ export default function Home() {
           </div></div>
         </>}
 
-        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && section !== "Quotes" && section !== "Policies" && <div className="panel empty">
+        {section === "Payments" && <>
+          <div className="metrics payment-metrics"><Metric label="Collected Today" value={`$${payments.filter(p => p.status === "posted" && new Date(p.created_at).toDateString() === new Date().toDateString()).reduce((sum,p) => sum + Number(p.amount),0).toFixed(2)}`} note="Posted payments" /><Metric label="Agency Fees Today" value={`$${payments.filter(p => p.status === "posted" && new Date(p.created_at).toDateString() === new Date().toDateString()).reduce((sum,p) => sum + Number(p.agency_fee),0).toFixed(2)}`} note="Agency revenue" /></div>
+          <div className="panel"><h2>Record Payment</h2><p className="muted">Record the transaction only. Never enter a card number or bank-account number.</p><form action={addPayment} className="quote-form">
+            <label>Customer<select name="customer_id" required defaultValue=""><option value="" disabled>Select a customer</option>{customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
+            <label>Carrier payment<input name="carrier_payment" type="number" min="0" step="0.01" required /></label>
+            <label>Agency fee<input name="agency_fee" type="number" min="0" step="0.01" defaultValue="0" required /></label>
+            <label>Method<select name="method" required defaultValue=""><option value="" disabled>Select method</option><option>Cash</option><option>Card</option><option>Check</option><option>ACH</option><option>Money order</option></select></label>
+            <label className="wide">Notes<textarea name="notes" placeholder="Optional; never enter payment credentials" /></label>
+            <button className="gold" type="submit">Record and create receipt</button>
+          </form>{paymentMessage && <p className="document-message" role="status">{paymentMessage}</p>}</div>
+          <div className="panel"><h2>Payment Activity</h2><div className="quote-list">
+            {payments.length === 0 && <p className="muted">No payments recorded.</p>}
+            {payments.map(payment => <div className={`payment-row ${payment.status === "voided" ? "voided" : ""}`} key={payment.id}>
+              <div><b>{payment.customers?.full_name ?? "Customer"}</b><span>{payment.receipt_number} · {new Date(payment.created_at).toLocaleString()}</span></div>
+              <div className="quote-price"><small>Total</small><b>${Number(payment.amount).toFixed(2)}</b></div>
+              <div><span>{payment.method}</span><b>{payment.status}</b></div>
+              <div className="document-actions"><button className="logout" onClick={() => setSelectedReceipt(payment)}>Receipt</button>{payment.status === "posted" && ["owner","manager","accounting"].includes(userRole) && <button className="logout" onClick={() => voidPayment(payment)}>Void</button>}</div>
+            </div>)}
+          </div></div>
+        </>}
+
+        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && section !== "Quotes" && section !== "Policies" && section !== "Payments" && <div className="panel empty">
           <h2>{section}</h2>
           <p>This production module is scaffolded and ready to connect to Supabase.</p>
         </div>}
@@ -357,6 +440,11 @@ export default function Home() {
           <button className="gold" type="submit">Save Customer</button>
         </form>
       </div>}
+      {selectedReceipt && <div className="modal receipt-modal"><div className="receipt" role="dialog" aria-label="Payment receipt">
+        <div className="row"><div><h2>Freedom Auto Insurance</h2><p>Payment Receipt</p></div><button className="close no-print" onClick={() => setSelectedReceipt(null)}>×</button></div>
+        <div className="receipt-number">{selectedReceipt.receipt_number}</div><dl><div><dt>Customer</dt><dd>{selectedReceipt.customers?.full_name}</dd></div><div><dt>Date</dt><dd>{new Date(selectedReceipt.created_at).toLocaleString()}</dd></div><div><dt>Method</dt><dd>{selectedReceipt.method}</dd></div><div><dt>Carrier payment</dt><dd>${Number(selectedReceipt.carrier_payment).toFixed(2)}</dd></div><div><dt>Agency fee</dt><dd>${Number(selectedReceipt.agency_fee).toFixed(2)}</dd></div><div className="receipt-total"><dt>Total received</dt><dd>${Number(selectedReceipt.amount).toFixed(2)}</dd></div><div><dt>Status</dt><dd>{selectedReceipt.status}</dd></div></dl>
+        <button className="gold no-print" onClick={() => window.print()}>Print receipt</button>
+      </div></div>}
     </main>
   );
 }
