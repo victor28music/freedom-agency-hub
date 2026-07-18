@@ -29,6 +29,7 @@ export default function Home() {
   const [documents, setDocuments] = useState<AgencyDocument[]>([]);
   const [uploading, setUploading] = useState(false);
   const [documentMessage, setDocumentMessage] = useState("");
+  const [userRole, setUserRole] = useState("");
 
   const filtered = useMemo(
     () => customers.filter(c => `${c.name} ${c.phone} ${c.carrier}`.toLowerCase().includes(search.toLowerCase())),
@@ -37,6 +38,11 @@ export default function Home() {
 
   useEffect(() => {
     const supabase = createClient();
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) return;
+      const { data } = await supabase.from("profiles").select("role").eq("id", user.id).single();
+      setUserRole(data?.role ?? "");
+    });
     supabase.from("customers").select("id,full_name,phone,policies(carrier,status)").order("created_at", { ascending: false }).then(({ data }) => {
       setCustomers((data ?? []).map((row: any) => ({
         id: row.id, name: row.full_name, phone: row.phone ?? "", carrier: row.policies?.[0]?.carrier ?? "—",
@@ -107,6 +113,18 @@ export default function Home() {
     window.open(data.signedUrl, "_blank", "noopener,noreferrer");
   }
 
+  async function deleteDocument(document: AgencyDocument) {
+    if (!window.confirm(`Permanently delete ${document.original_filename}?`)) return;
+    setDocumentMessage("");
+    const supabase = createClient();
+    const { error: fileError } = await supabase.storage.from("agency-documents").remove([document.storage_path]);
+    if (fileError) { setDocumentMessage(fileError.message); return; }
+    const { error } = await supabase.from("documents").delete().eq("id", document.id);
+    if (error) { setDocumentMessage(error.message); return; }
+    setDocuments(prev => prev.filter(item => item.id !== document.id));
+    setDocumentMessage("Document deleted.");
+  }
+
   return (
     <main className="shell">
       <aside>
@@ -158,7 +176,7 @@ export default function Home() {
             {documents.length === 0 && <p className="muted">No documents uploaded.</p>}
             {documents.map(document => <div className="document-row" key={document.id}>
               <div><b>{document.original_filename}</b><span>{document.customers?.full_name ?? "Customer"} · {(document.file_size / 1048576).toFixed(2)} MB</span></div>
-              <button className="logout" onClick={() => openDocument(document.storage_path)}>Open</button>
+              <div className="document-actions"><button className="logout" onClick={() => openDocument(document.storage_path)}>Open</button>{["owner","manager"].includes(userRole) && <button className="logout" onClick={() => deleteDocument(document)}>Delete</button>}</div>
             </div>)}
           </div></div>
         </>}
