@@ -77,6 +77,13 @@ type Task = {
   assignee: { full_name: string | null } | null;
 };
 
+type DashboardStats = {
+  newCustomers: number;
+  openQuotes: number;
+  renewalsDue: number;
+  collectedToday: number;
+};
+
 export default function Home() {
   const [section, setSection] = useState("Dashboard");
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -96,6 +103,8 @@ export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [staff, setStaff] = useState<StaffProfile[]>([]);
   const [taskMessage, setTaskMessage] = useState("");
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats>({ newCustomers: 0, openQuotes: 0, renewalsDue: 0, collectedToday: 0 });
+  const [dashboardLoaded, setDashboardLoaded] = useState(false);
 
   const filtered = useMemo(
     () => customers.filter(c => `${c.name} ${c.phone} ${c.carrier}`.toLowerCase().includes(search.toLowerCase())),
@@ -123,6 +132,29 @@ export default function Home() {
       .select("id,original_filename,storage_path,mime_type,file_size,created_at,customers(full_name)")
       .order("created_at", { ascending: false })
       .then(({ data }) => setDocuments((data ?? []) as unknown as AgencyDocument[]));
+  }, [section]);
+
+  useEffect(() => {
+    if (section !== "Dashboard") return;
+    const supabase = createClient();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const inThirtyDays = new Date(today);
+    inThirtyDays.setDate(inThirtyDays.getDate() + 30);
+    Promise.all([
+      supabase.from("customers").select("id", { count: "exact", head: true }).gte("created_at", today.toISOString()),
+      supabase.from("quotes").select("id", { count: "exact", head: true }).in("status", ["draft", "presented"]),
+      supabase.from("policies").select("id", { count: "exact", head: true }).eq("status", "active").gte("expiration_date", today.toISOString().slice(0,10)).lte("expiration_date", inThirtyDays.toISOString().slice(0,10)),
+      supabase.from("payments").select("amount").eq("status", "posted").gte("created_at", today.toISOString()),
+    ]).then(([customersResult, quotesResult, policiesResult, paymentsResult]) => {
+      setDashboardStats({
+        newCustomers: customersResult.count ?? 0,
+        openQuotes: quotesResult.count ?? 0,
+        renewalsDue: policiesResult.count ?? 0,
+        collectedToday: (paymentsResult.data ?? []).reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0),
+      });
+      setDashboardLoaded(true);
+    });
   }, [section]);
 
   useEffect(() => {
@@ -390,10 +422,10 @@ export default function Home() {
 
         {section === "Dashboard" && <>
           <div className="metrics">
-            <Metric label="New Leads" value="18" note="+6 today" />
-            <Metric label="Quotes in Progress" value="11" note="4 need follow-up" />
-            <Metric label="Renewals Due" value="23" note="Next 30 days" />
-            <Metric label="Collected Today" value="$4,860" note="12 payments" />
+            <Metric label="New Customers" value={dashboardLoaded ? String(dashboardStats.newCustomers) : "—"} note="Added today" />
+            <Metric label="Quotes in Progress" value={dashboardLoaded ? String(dashboardStats.openQuotes) : "—"} note="Draft or presented" />
+            <Metric label="Renewals Due" value={dashboardLoaded ? String(dashboardStats.renewalsDue) : "—"} note="Next 30 days" />
+            <Metric label="Collected Today" value={dashboardLoaded ? `$${dashboardStats.collectedToday.toFixed(2)}` : "—"} note="Posted payments" />
           </div>
           <div className="panel">
             <h2>Recent Customers</h2>
