@@ -61,6 +61,22 @@ type Payment = {
   customers: { full_name: string } | null;
 };
 
+type StaffProfile = { id: string; full_name: string | null; role: string };
+
+type Task = {
+  id: string;
+  title: string;
+  description: string | null;
+  priority: "low" | "normal" | "high" | "urgent";
+  status: "open" | "in_progress" | "completed" | "canceled";
+  due_at: string | null;
+  assigned_to: string | null;
+  created_by: string;
+  completed_at: string | null;
+  customers: { full_name: string } | null;
+  assignee: { full_name: string | null } | null;
+};
+
 export default function Home() {
   const [section, setSection] = useState("Dashboard");
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -77,6 +93,9 @@ export default function Home() {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [paymentMessage, setPaymentMessage] = useState("");
   const [selectedReceipt, setSelectedReceipt] = useState<Payment | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [staff, setStaff] = useState<StaffProfile[]>([]);
+  const [taskMessage, setTaskMessage] = useState("");
 
   const filtered = useMemo(
     () => customers.filter(c => `${c.name} ${c.phone} ${c.carrier}`.toLowerCase().includes(search.toLowerCase())),
@@ -112,6 +131,17 @@ export default function Home() {
       .select("id,receipt_number,amount,agency_fee,carrier_payment,method,notes,status,created_at,customers(full_name)")
       .order("created_at", { ascending: false })
       .then(({ data }) => setPayments((data ?? []) as unknown as Payment[]));
+  }, [section]);
+
+  useEffect(() => {
+    if (section !== "Tasks") return;
+    const supabase = createClient();
+    supabase.from("tasks")
+      .select("id,title,description,priority,status,due_at,assigned_to,created_by,completed_at,customers(full_name),assignee:profiles!tasks_assigned_to_fkey(full_name)")
+      .order("due_at", { ascending: true, nullsFirst: false })
+      .then(({ data }) => setTasks((data ?? []) as unknown as Task[]));
+    supabase.from("profiles").select("id,full_name,role").order("full_name")
+      .then(({ data }) => setStaff((data ?? []) as StaffProfile[]));
   }, [section]);
 
   useEffect(() => {
@@ -300,6 +330,46 @@ export default function Home() {
     setPaymentMessage("Payment voided. The original record remains in the audit trail.");
   }
 
+  async function addTask(formData: FormData) {
+    setTaskMessage("");
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    const { data: profile } = user ? await supabase.from("profiles").select("agency_id").eq("id", user.id).single() : { data: null };
+    if (!user || !profile) return;
+    const customerId = String(formData.get("customer_id") || "");
+    const assignedTo = String(formData.get("assigned_to") || "");
+    const dueAt = String(formData.get("due_at") || "");
+    const { data, error } = await supabase.from("tasks").insert({
+      agency_id: profile.agency_id,
+      customer_id: customerId || null,
+      title: String(formData.get("title") || "").trim(),
+      description: String(formData.get("description") || "").trim() || null,
+      priority: String(formData.get("priority")),
+      status: "open",
+      due_at: dueAt ? new Date(dueAt).toISOString() : null,
+      assigned_to: assignedTo || null,
+      created_by: user.id,
+    }).select("id,title,description,priority,status,due_at,assigned_to,created_by,completed_at,customers(full_name),assignee:profiles!tasks_assigned_to_fkey(full_name)").single();
+    if (error) { setTaskMessage(error.message); return; }
+    if (data) setTasks(prev => [...prev, data as unknown as Task].sort((a,b) => String(a.due_at ?? "9999").localeCompare(String(b.due_at ?? "9999"))));
+    setTaskMessage("Task created.");
+  }
+
+  async function setTaskStatus(task: Task, status: Task["status"]) {
+    const completedAt = status === "completed" ? new Date().toISOString() : null;
+    const { error } = await createClient().from("tasks").update({ status, completed_at: completedAt, updated_at: new Date().toISOString() }).eq("id", task.id);
+    if (error) { setTaskMessage(error.message); return; }
+    setTasks(prev => prev.map(item => item.id === task.id ? { ...item, status, completed_at: completedAt } : item));
+  }
+
+  async function deleteTask(task: Task) {
+    if (!window.confirm(`Delete task “${task.title}”?`)) return;
+    const { error } = await createClient().from("tasks").delete().eq("id", task.id);
+    if (error) { setTaskMessage(error.message); return; }
+    setTasks(prev => prev.filter(item => item.id !== task.id));
+    setTaskMessage("Task deleted.");
+  }
+
   return (
     <main className="shell">
       <aside>
@@ -425,7 +495,31 @@ export default function Home() {
           </div></div>
         </>}
 
-        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && section !== "Quotes" && section !== "Policies" && section !== "Payments" && <div className="panel empty">
+        {section === "Tasks" && <>
+          <div className="metrics task-metrics"><Metric label="Open Tasks" value={String(tasks.filter(task => !["completed","canceled"].includes(task.status)).length)} note="Needs attention" /><Metric label="Overdue" value={String(tasks.filter(task => task.due_at && new Date(task.due_at) < new Date() && !["completed","canceled"].includes(task.status)).length)} note="Past due date" /><Metric label="Completed" value={String(tasks.filter(task => task.status === "completed").length)} note="All completed tasks" /></div>
+          <div className="panel"><h2>Create Task or Reminder</h2><form action={addTask} className="quote-form">
+            <label className="wide">Task title<input name="title" required placeholder="Call customer about renewal" /></label>
+            <label>Customer (optional)<select name="customer_id" defaultValue=""><option value="">No customer</option>{customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
+            <label>Assign to<select name="assigned_to" defaultValue=""><option value="">Unassigned</option>{staff.map(person => <option key={person.id} value={person.id}>{person.full_name || "Staff member"} · {person.role}</option>)}</select></label>
+            <label>Due date and time<input name="due_at" type="datetime-local" /></label>
+            <label>Priority<select name="priority" defaultValue="normal"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
+            <label className="wide">Instructions<textarea name="description" placeholder="Optional task details" /></label>
+            <button className="gold" type="submit">Create task</button>
+          </form>{taskMessage && <p className="document-message" role="status">{taskMessage}</p>}</div>
+          <div className="panel"><div className="row"><h2>Task List</h2><span className="muted">Due soonest first</span></div><div className="task-list">
+            {tasks.length === 0 && <p className="muted">No tasks created.</p>}
+            {tasks.map(task => { const overdue = Boolean(task.due_at && new Date(task.due_at) < new Date() && !["completed","canceled"].includes(task.status)); return <div className={`task-card priority-${task.priority} ${overdue ? "overdue" : ""} ${task.status === "completed" ? "completed" : ""}`} key={task.id}>
+              <div className="task-main"><div className="quote-title"><b>{task.title}</b><span className={`priority-label ${task.priority}`}>{task.priority}</span>{overdue && <span className="overdue-label">Overdue</span>}</div><span>{task.customers?.full_name ?? "No customer"} · Assigned to {task.assignee?.full_name ?? "Unassigned"}</span>{task.description && <small>{task.description}</small>}</div>
+              <div className="task-due"><small>Due</small><b>{task.due_at ? new Date(task.due_at).toLocaleString() : "No due date"}</b></div>
+              <select value={task.status} onChange={event => setTaskStatus(task,event.target.value as Task["status"])}><option value="open">Open</option><option value="in_progress">In progress</option><option value="completed">Completed</option><option value="canceled">Canceled</option></select>
+              {[
+                "owner","manager"
+              ].includes(userRole) && <button className="logout" onClick={() => deleteTask(task)}>Delete</button>}
+            </div>})}
+          </div></div>
+        </>}
+
+        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && section !== "Quotes" && section !== "Policies" && section !== "Payments" && section !== "Tasks" && <div className="panel empty">
           <h2>{section}</h2>
           <p>This production module is scaffolded and ready to connect to Supabase.</p>
         </div>}
