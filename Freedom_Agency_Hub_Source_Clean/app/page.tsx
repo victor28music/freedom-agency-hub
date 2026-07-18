@@ -34,6 +34,20 @@ type Quote = {
   customers: { full_name: string } | null;
 };
 
+type Policy = {
+  id: string;
+  carrier: string | null;
+  policy_number: string | null;
+  effective_date: string | null;
+  expiration_date: string | null;
+  monthly_premium: number | null;
+  down_payment: number | null;
+  payment_due_day: number | null;
+  coverage_summary: string | null;
+  status: string;
+  customers: { full_name: string } | null;
+};
+
 export default function Home() {
   const [section, setSection] = useState("Dashboard");
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -45,6 +59,8 @@ export default function Home() {
   const [userRole, setUserRole] = useState("");
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [quoteMessage, setQuoteMessage] = useState("");
+  const [policies, setPolicies] = useState<Policy[]>([]);
+  const [policyMessage, setPolicyMessage] = useState("");
 
   const filtered = useMemo(
     () => customers.filter(c => `${c.name} ${c.phone} ${c.carrier}`.toLowerCase().includes(search.toLowerCase())),
@@ -72,6 +88,14 @@ export default function Home() {
       .select("id,original_filename,storage_path,mime_type,file_size,created_at,customers(full_name)")
       .order("created_at", { ascending: false })
       .then(({ data }) => setDocuments((data ?? []) as unknown as AgencyDocument[]));
+  }, [section]);
+
+  useEffect(() => {
+    if (section !== "Policies") return;
+    createClient().from("policies")
+      .select("id,carrier,policy_number,effective_date,expiration_date,monthly_premium,down_payment,payment_due_day,coverage_summary,status,customers(full_name)")
+      .order("expiration_date", { ascending: true })
+      .then(({ data }) => setPolicies((data ?? []) as unknown as Policy[]));
   }, [section]);
 
   useEffect(() => {
@@ -181,6 +205,39 @@ export default function Home() {
     setQuotes(prev => prev.map(quote => quote.id === id ? { ...quote, status } : quote));
   }
 
+  async function addPolicy(formData: FormData) {
+    setPolicyMessage("");
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    const { data: profile } = user ? await supabase.from("profiles").select("agency_id").eq("id", user.id).single() : { data: null };
+    if (!user || !profile) return;
+    const payload = {
+      agency_id: profile.agency_id,
+      customer_id: String(formData.get("customer_id")),
+      carrier: String(formData.get("carrier")).trim(),
+      policy_number: String(formData.get("policy_number")).trim(),
+      effective_date: String(formData.get("effective_date")),
+      expiration_date: String(formData.get("expiration_date")),
+      monthly_premium: Number(formData.get("monthly_premium")),
+      down_payment: Number(formData.get("down_payment")),
+      payment_due_day: Number(formData.get("payment_due_day")),
+      coverage_summary: String(formData.get("coverage_summary")).trim(),
+      status: "active",
+      created_by: user.id,
+    };
+    const { data, error } = await supabase.from("policies").insert(payload)
+      .select("id,carrier,policy_number,effective_date,expiration_date,monthly_premium,down_payment,payment_due_day,coverage_summary,status,customers(full_name)").single();
+    if (error) { setPolicyMessage(error.message); return; }
+    if (data) setPolicies(prev => [...prev, data as unknown as Policy].sort((a,b) => String(a.expiration_date).localeCompare(String(b.expiration_date))));
+    setPolicyMessage("Policy saved.");
+  }
+
+  async function setPolicyStatus(id: string, status: string) {
+    const { error } = await createClient().from("policies").update({ status, updated_at: new Date().toISOString() }).eq("id", id);
+    if (error) { setPolicyMessage(error.message); return; }
+    setPolicies(prev => prev.map(policy => policy.id === id ? { ...policy, status } : policy));
+  }
+
   return (
     <main className="shell">
       <aside>
@@ -261,7 +318,31 @@ export default function Home() {
           </div></div>
         </>}
 
-        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && section !== "Quotes" && <div className="panel empty">
+        {section === "Policies" && <>
+          <div className="panel"><h2>Add Policy</h2><form action={addPolicy} className="quote-form">
+            <label>Customer<select name="customer_id" required defaultValue=""><option value="" disabled>Select a customer</option>{customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
+            <label>Carrier<input name="carrier" required /></label>
+            <label>Policy number<input name="policy_number" required /></label>
+            <label>Payment due day<input name="payment_due_day" type="number" min="1" max="31" required /></label>
+            <label>Effective date<input name="effective_date" type="date" required /></label>
+            <label>Expiration date<input name="expiration_date" type="date" required /></label>
+            <label>Down payment<input name="down_payment" type="number" min="0" step="0.01" required /></label>
+            <label>Monthly premium<input name="monthly_premium" type="number" min="0" step="0.01" required /></label>
+            <label className="wide">Coverage summary<textarea name="coverage_summary" required placeholder="Limits, deductibles, vehicles, endorsements…" /></label>
+            <button className="gold" type="submit">Save policy</button>
+          </form>{policyMessage && <p className="document-message" role="status">{policyMessage}</p>}</div>
+          <div className="panel"><div className="row"><h2>Policy Book</h2><span className="muted">Renewals ordered by expiration</span></div><div className="quote-list">
+            {policies.length === 0 && <p className="muted">No policies saved.</p>}
+            {policies.map(policy => { const days = policy.expiration_date ? Math.ceil((new Date(`${policy.expiration_date}T12:00:00`).getTime() - Date.now()) / 86400000) : null; return <div className={`policy-card ${days !== null && days <= 30 ? "renewal-due" : ""}`} key={policy.id}>
+              <div><b>{policy.customers?.full_name ?? "Customer"}</b><span>{policy.carrier} · #{policy.policy_number}</span><small>{policy.coverage_summary}</small></div>
+              <div className="quote-price"><small>Monthly</small><b>${Number(policy.monthly_premium ?? 0).toFixed(2)}</b></div>
+              <div className="quote-price"><small>Expires</small><b>{policy.expiration_date ?? "—"}</b><span>{days === null ? "" : days < 0 ? "Expired" : `${days} days`}</span></div>
+              <select value={policy.status} onChange={event => setPolicyStatus(policy.id,event.target.value)}><option value="active">Active</option><option value="pending">Pending</option><option value="cancel_notice">Cancel notice</option><option value="canceled">Canceled</option><option value="expired">Expired</option><option value="rewritten">Rewritten</option></select>
+            </div>})}
+          </div></div>
+        </>}
+
+        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && section !== "Quotes" && section !== "Policies" && <div className="panel empty">
           <h2>{section}</h2>
           <p>This production module is scaffolded and ready to connect to Supabase.</p>
         </div>}
