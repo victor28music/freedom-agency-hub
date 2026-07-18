@@ -21,6 +21,19 @@ type AgencyDocument = {
   customers: { full_name: string } | null;
 };
 
+type Quote = {
+  id: string;
+  carrier: string;
+  quote_number: string | null;
+  coverage_summary: string;
+  down_payment: number;
+  monthly_payment: number;
+  term_months: number;
+  valid_until: string | null;
+  status: "draft" | "presented" | "accepted" | "declined" | "expired";
+  customers: { full_name: string } | null;
+};
+
 export default function Home() {
   const [section, setSection] = useState("Dashboard");
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -30,6 +43,8 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [documentMessage, setDocumentMessage] = useState("");
   const [userRole, setUserRole] = useState("");
+  const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [quoteMessage, setQuoteMessage] = useState("");
 
   const filtered = useMemo(
     () => customers.filter(c => `${c.name} ${c.phone} ${c.carrier}`.toLowerCase().includes(search.toLowerCase())),
@@ -57,6 +72,14 @@ export default function Home() {
       .select("id,original_filename,storage_path,mime_type,file_size,created_at,customers(full_name)")
       .order("created_at", { ascending: false })
       .then(({ data }) => setDocuments((data ?? []) as unknown as AgencyDocument[]));
+  }, [section]);
+
+  useEffect(() => {
+    if (section !== "Quotes") return;
+    createClient().from("quotes")
+      .select("id,carrier,quote_number,coverage_summary,down_payment,monthly_payment,term_months,valid_until,status,customers(full_name)")
+      .order("monthly_payment", { ascending: true })
+      .then(({ data }) => setQuotes((data ?? []) as unknown as Quote[]));
   }, [section]);
 
   async function addCustomer(formData: FormData) {
@@ -125,6 +148,39 @@ export default function Home() {
     setDocumentMessage("Document deleted.");
   }
 
+  async function addQuote(formData: FormData) {
+    setQuoteMessage("");
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    const { data: profile } = user ? await supabase.from("profiles").select("agency_id").eq("id", user.id).single() : { data: null };
+    if (!user || !profile) return;
+    const payload = {
+      agency_id: profile.agency_id,
+      customer_id: String(formData.get("customer_id")),
+      carrier: String(formData.get("carrier")).trim(),
+      quote_number: String(formData.get("quote_number") || "").trim() || null,
+      coverage_summary: String(formData.get("coverage_summary")).trim(),
+      down_payment: Number(formData.get("down_payment")),
+      monthly_payment: Number(formData.get("monthly_payment")),
+      term_months: Number(formData.get("term_months")),
+      valid_until: String(formData.get("valid_until") || "") || null,
+      status: "draft",
+      notes: String(formData.get("notes") || "").trim() || null,
+      created_by: user.id,
+    };
+    const { data, error } = await supabase.from("quotes").insert(payload)
+      .select("id,carrier,quote_number,coverage_summary,down_payment,monthly_payment,term_months,valid_until,status,customers(full_name)").single();
+    if (error) { setQuoteMessage(error.message); return; }
+    if (data) setQuotes(prev => [...prev, data as unknown as Quote].sort((a,b) => Number(a.monthly_payment) - Number(b.monthly_payment)));
+    setQuoteMessage("Quote saved.");
+  }
+
+  async function setQuoteStatus(id: string, status: Quote["status"]) {
+    const { error } = await createClient().from("quotes").update({ status, updated_at: new Date().toISOString() }).eq("id", id);
+    if (error) { setQuoteMessage(error.message); return; }
+    setQuotes(prev => prev.map(quote => quote.id === id ? { ...quote, status } : quote));
+  }
+
   return (
     <main className="shell">
       <aside>
@@ -181,7 +237,31 @@ export default function Home() {
           </div></div>
         </>}
 
-        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && <div className="panel empty">
+        {section === "Quotes" && <>
+          <div className="panel"><h2>New Carrier Quote</h2><form action={addQuote} className="quote-form">
+            <label>Customer<select name="customer_id" required defaultValue=""><option value="" disabled>Select a customer</option>{customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
+            <label>Carrier<input name="carrier" placeholder="Carrier name" required /></label>
+            <label>Quote number<input name="quote_number" placeholder="Optional" /></label>
+            <label>Down payment<input name="down_payment" type="number" min="0" step="0.01" required /></label>
+            <label>Monthly payment<input name="monthly_payment" type="number" min="0" step="0.01" required /></label>
+            <label>Term<select name="term_months" defaultValue="6"><option value="6">6 months</option><option value="12">12 months</option></select></label>
+            <label>Valid until<input name="valid_until" type="date" /></label>
+            <label className="wide">Coverage summary<textarea name="coverage_summary" placeholder="Liability limits, deductibles, roadside, rental…" required /></label>
+            <label className="wide">Notes<textarea name="notes" placeholder="Optional internal notes" /></label>
+            <button className="gold" type="submit">Save quote</button>
+          </form>{quoteMessage && <p className="document-message" role="status">{quoteMessage}</p>}</div>
+          <div className="panel"><div className="row"><h2>Carrier Comparison</h2><span className="muted">Lowest monthly price first</span></div><div className="quote-list">
+            {quotes.length === 0 && <p className="muted">No quotes saved.</p>}
+            {quotes.map((quote,index) => <div className={`quote-card ${index === 0 ? "best" : ""}`} key={quote.id}>
+              <div><div className="quote-title"><b>{quote.carrier}</b>{index === 0 && <span className="best-label">Lowest monthly</span>}</div><span>{quote.customers?.full_name ?? "Customer"} · {quote.coverage_summary}</span></div>
+              <div className="quote-price"><small>Down</small><b>${Number(quote.down_payment).toFixed(2)}</b></div>
+              <div className="quote-price"><small>Monthly</small><b>${Number(quote.monthly_payment).toFixed(2)}</b></div>
+              <select value={quote.status} onChange={event => setQuoteStatus(quote.id, event.target.value as Quote["status"])}><option value="draft">Draft</option><option value="presented">Presented</option><option value="accepted">Accepted</option><option value="declined">Declined</option><option value="expired">Expired</option></select>
+            </div>)}
+          </div></div>
+        </>}
+
+        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && section !== "Quotes" && <div className="panel empty">
           <h2>{section}</h2>
           <p>This production module is scaffolded and ready to connect to Supabase.</p>
         </div>}
