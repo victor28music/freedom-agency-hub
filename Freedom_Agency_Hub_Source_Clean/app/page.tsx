@@ -61,7 +61,13 @@ type Payment = {
   customers: { full_name: string } | null;
 };
 
-type StaffProfile = { id: string; full_name: string | null; role: string };
+type StaffProfile = {
+  id: string;
+  full_name: string | null;
+  email: string | null;
+  role: string;
+  active: boolean;
+};
 
 type Task = {
   id: string;
@@ -103,6 +109,7 @@ export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [staff, setStaff] = useState<StaffProfile[]>([]);
   const [taskMessage, setTaskMessage] = useState("");
+  const [employeeMessage, setEmployeeMessage] = useState("");
   const [dashboardStats, setDashboardStats] = useState<DashboardStats>({ newCustomers: 0, openQuotes: 0, renewalsDue: 0, collectedToday: 0 });
   const [dashboardLoaded, setDashboardLoaded] = useState(false);
 
@@ -172,9 +179,20 @@ export default function Home() {
       .select("id,title,description,priority,status,due_at,assigned_to,created_by,completed_at,customers(full_name),assignee:profiles!tasks_assigned_to_fkey(full_name)")
       .order("due_at", { ascending: true, nullsFirst: false })
       .then(({ data }) => setTasks((data ?? []) as unknown as Task[]));
-    supabase.from("profiles").select("id,full_name,role").order("full_name")
+    supabase.from("profiles").select("id,full_name,email,role,active").eq("active", true).order("full_name")
       .then(({ data }) => setStaff((data ?? []) as StaffProfile[]));
   }, [section]);
+
+  useEffect(() => {
+    if (section !== "Employees" || userRole !== "owner") return;
+    createClient().from("profiles")
+      .select("id,full_name,email,role,active")
+      .order("full_name")
+      .then(({ data, error }) => {
+        if (error) setEmployeeMessage(error.message);
+        else setStaff((data ?? []) as StaffProfile[]);
+      });
+  }, [section, userRole]);
 
   useEffect(() => {
     if (section !== "Policies") return;
@@ -402,12 +420,31 @@ export default function Home() {
     setTaskMessage("Task deleted.");
   }
 
+  async function manageEmployee(formData: FormData) {
+    setEmployeeMessage("");
+    const targetUserId = String(formData.get("target_user_id") || "");
+    const fullName = String(formData.get("full_name") || "").trim();
+    const role = String(formData.get("role") || "agent");
+    const active = String(formData.get("active")) === "true";
+    const { error } = await createClient().rpc("manage_employee", {
+      target_user_id: targetUserId,
+      new_full_name: fullName,
+      new_role: role,
+      new_active: active,
+    });
+    if (error) { setEmployeeMessage(error.message); return; }
+    setStaff(previous => previous.map(person => person.id === targetUserId
+      ? { ...person, full_name: fullName, role, active }
+      : person));
+    setEmployeeMessage("Employee access updated successfully.");
+  }
+
   return (
     <main className="shell">
       <aside>
         <div className="brand"><div className="logo">F</div><div><b>Freedom Agency Hub</b><span>Freedom Auto Insurance</span></div></div>
         <nav>
-          {["Dashboard","Customers","Documents","Quotes","Policies","Payments","Tasks"].map(item =>
+          {["Dashboard","Customers","Documents","Quotes","Policies","Payments","Tasks", ...(userRole === "owner" ? ["Employees"] : [])].map(item =>
             <button key={item} className={section === item ? "active" : ""} onClick={() => setSection(item)}>{item}</button>
           )}
         </nav>
@@ -551,7 +588,25 @@ export default function Home() {
           </div></div>
         </>}
 
-        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && section !== "Quotes" && section !== "Policies" && section !== "Payments" && section !== "Tasks" && <div className="panel empty">
+        {section === "Employees" && userRole === "owner" && <>
+          <div className="panel">
+            <div className="row"><div><h2>Employee Management</h2><p className="muted">Only the agency owner can change roles or employee access.</p></div><span className="badge active">Owner access</span></div>
+            {employeeMessage && <p className="document-message" role="status">{employeeMessage}</p>}
+          </div>
+          <div className="employee-list">
+            {staff.length === 0 && <div className="panel"><p className="muted">No employee profiles found.</p></div>}
+            {staff.map(person => <form action={manageEmployee} className="panel employee-card" key={person.id}>
+              <input type="hidden" name="target_user_id" value={person.id} />
+              <label>Employee name<input name="full_name" defaultValue={person.full_name ?? ""} required /></label>
+              <label>Email<input value={person.email ?? "Not available"} disabled /></label>
+              <label>Role<select name="role" defaultValue={person.role}><option value="owner">Owner</option><option value="manager">Manager</option><option value="agent">Agent</option><option value="csr">Customer service</option><option value="accounting">Accounting</option></select></label>
+              <label>Access<select name="active" defaultValue={String(person.active)}><option value="true">Active</option><option value="false">Deactivated</option></select></label>
+              <button className="gold" type="submit">Save employee</button>
+            </form>)}
+          </div>
+        </>}
+
+        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && section !== "Quotes" && section !== "Policies" && section !== "Payments" && section !== "Tasks" && section !== "Employees" && <div className="panel empty">
           <h2>{section}</h2>
           <p>This production module is scaffolded and ready to connect to Supabase.</p>
         </div>}
