@@ -18,7 +18,9 @@ export async function proxy(request: NextRequest) {
     },
   );
   const { data: { user } } = await supabase.auth.getUser();
-  const publicPage = request.nextUrl.pathname.startsWith("/login") || request.nextUrl.pathname.startsWith("/accept-invite");
+  const publicPage = request.nextUrl.pathname.startsWith("/login")
+    || request.nextUrl.pathname.startsWith("/accept-invite")
+    || request.nextUrl.pathname.startsWith("/reset-password");
   if (!user && !publicPage) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
