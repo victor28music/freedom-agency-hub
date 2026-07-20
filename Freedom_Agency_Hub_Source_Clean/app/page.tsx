@@ -7,8 +7,21 @@ type Customer = {
   id: string;
   name: string;
   phone: string;
+  email?: string;
+  preferred_language?: string;
+  address?: string;
+  notes?: string;
   carrier: string;
   status: "Active" | "Quoted" | "Cancel Notice" | "New";
+};
+
+type Vehicle = {
+  id: string;
+  customer_id: string;
+  year: number | null;
+  make: string | null;
+  model: string | null;
+  vin: string | null;
 };
 
 type AgencyDocument = {
@@ -95,6 +108,9 @@ export default function Home() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState("");
   const [showCustomer, setShowCustomer] = useState(false);
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [customerVehicles, setCustomerVehicles] = useState<Vehicle[]>([]);
+  const [customerMessage, setCustomerMessage] = useState("");
   const [documents, setDocuments] = useState<AgencyDocument[]>([]);
   const [uploading, setUploading] = useState(false);
   const [documentMessage, setDocumentMessage] = useState("");
@@ -224,9 +240,85 @@ export default function Home() {
     if (!user) return;
     const { data: profile } = await supabase.from("profiles").select("agency_id").eq("id", user.id).single();
     if (!profile) return;
-    const { data } = await supabase.from("customers").insert({ agency_id: profile.agency_id, full_name: name, phone, created_by: user.id }).select("id").single();
-    if (data) setCustomers(prev => [{ id: data.id, name, phone, carrier: "—", status: "New" }, ...prev]);
+    const email = String(formData.get("email") || "").trim();
+    const preferredLanguage = String(formData.get("language") || "English");
+    const address = String(formData.get("address") || "").trim();
+    const notes = String(formData.get("notes") || "").trim();
+    const { data } = await supabase.from("customers").insert({ agency_id: profile.agency_id, full_name: name, phone, email: email || null, preferred_language: preferredLanguage, address: address || null, notes: notes || null, created_by: user.id }).select("id").single();
+    if (data) setCustomers(prev => [{ id: data.id, name, phone, email, preferred_language: preferredLanguage, address, notes, carrier: "—", status: "New" }, ...prev]);
     setShowCustomer(false);
+  }
+
+  async function openCustomer(customerId: string) {
+    setCustomerMessage("");
+    const supabase = createClient();
+    const [{ data: customer, error }, { data: vehicles }] = await Promise.all([
+      supabase.from("customers").select("id,full_name,phone,email,preferred_language,address,notes,policies(carrier,status)").eq("id", customerId).single(),
+      supabase.from("vehicles").select("id,customer_id,year,make,model,vin").eq("customer_id", customerId).order("created_at"),
+    ]);
+    if (error || !customer) { setCustomerMessage(error?.message || "Customer could not be opened."); return; }
+    const row = customer as any;
+    setSelectedCustomer({
+      id: row.id,
+      name: row.full_name,
+      phone: row.phone ?? "",
+      email: row.email ?? "",
+      preferred_language: row.preferred_language ?? "English",
+      address: row.address ?? "",
+      notes: row.notes ?? "",
+      carrier: row.policies?.[0]?.carrier ?? "—",
+      status: row.policies?.[0]?.status === "active" ? "Active" : "New",
+    });
+    setCustomerVehicles((vehicles ?? []) as Vehicle[]);
+  }
+
+  async function updateCustomer(formData: FormData) {
+    if (!selectedCustomer) return;
+    setCustomerMessage("");
+    const updated = {
+      name: String(formData.get("name") || "").trim(),
+      phone: String(formData.get("phone") || "").trim(),
+      email: String(formData.get("email") || "").trim(),
+      preferred_language: String(formData.get("language") || "English"),
+      address: String(formData.get("address") || "").trim(),
+      notes: String(formData.get("notes") || "").trim(),
+    };
+    const { error } = await createClient().from("customers").update({
+      full_name: updated.name,
+      phone: updated.phone || null,
+      email: updated.email || null,
+      preferred_language: updated.preferred_language,
+      address: updated.address || null,
+      notes: updated.notes || null,
+      updated_at: new Date().toISOString(),
+    }).eq("id", selectedCustomer.id);
+    if (error) { setCustomerMessage(error.message); return; }
+    setSelectedCustomer(previous => previous ? { ...previous, ...updated } : previous);
+    setCustomers(previous => previous.map(customer => customer.id === selectedCustomer.id ? { ...customer, ...updated } : customer));
+    setCustomerMessage("Customer profile updated.");
+  }
+
+  async function addVehicle(formData: FormData) {
+    if (!selectedCustomer) return;
+    setCustomerMessage("");
+    const { data, error } = await createClient().from("vehicles").insert({
+      customer_id: selectedCustomer.id,
+      year: Number(formData.get("year")) || null,
+      make: String(formData.get("make") || "").trim() || null,
+      model: String(formData.get("model") || "").trim() || null,
+      vin: String(formData.get("vin") || "").trim().toUpperCase() || null,
+    }).select("id,customer_id,year,make,model,vin").single();
+    if (error) { setCustomerMessage(error.message); return; }
+    if (data) setCustomerVehicles(previous => [...previous, data as Vehicle]);
+    setCustomerMessage("Vehicle added.");
+  }
+
+  async function deleteVehicle(vehicle: Vehicle) {
+    if (!window.confirm(`Delete ${vehicle.year ?? ""} ${vehicle.make ?? ""} ${vehicle.model ?? "vehicle"}?`)) return;
+    const { error } = await createClient().from("vehicles").delete().eq("id", vehicle.id);
+    if (error) { setCustomerMessage(error.message); return; }
+    setCustomerVehicles(previous => previous.filter(item => item.id !== vehicle.id));
+    setCustomerMessage("Vehicle deleted.");
   }
 
   async function uploadDocument(formData: FormData) {
@@ -495,13 +587,13 @@ export default function Home() {
           </div>
           <div className="panel">
             <h2>Recent Customers</h2>
-            <CustomerTable customers={customers.slice(0,5)} />
+            <CustomerTable customers={customers.slice(0,5)} onSelect={openCustomer} />
           </div>
         </>}
 
         {section === "Customers" && <div className="panel">
           <div className="row"><h2>Customer Records</h2><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search customers..." /></div>
-          <CustomerTable customers={filtered} />
+          <CustomerTable customers={filtered} onSelect={openCustomer} />
         </div>}
 
         {section === "Documents" && <>
@@ -652,10 +744,29 @@ export default function Home() {
           <div className="row"><h2>Add Customer</h2><button type="button" className="close" onClick={() => setShowCustomer(false)}>×</button></div>
           <label>Full Name<input name="name" required /></label>
           <label>Phone<input name="phone" /></label>
+          <label>Email<input name="email" type="email" /></label>
           <label>Preferred Language<select name="language"><option>English</option><option>Spanish</option></select></label>
+          <label>Address<input name="address" /></label>
+          <label>Notes<textarea name="notes" /></label>
           <button className="gold" type="submit">Save Customer</button>
         </form>
       </div>}
+      {selectedCustomer && <div className="modal customer-modal"><div className="customer-profile" role="dialog" aria-label="Customer profile">
+        <div className="row"><div><h2>{selectedCustomer.name}</h2><p>{selectedCustomer.carrier} · {selectedCustomer.status}</p></div><button className="close" onClick={() => setSelectedCustomer(null)}>×</button></div>
+        {isOperationalStaff ? <form action={updateCustomer} className="customer-profile-form">
+          <label>Full name<input name="name" defaultValue={selectedCustomer.name} required /></label>
+          <label>Phone<input name="phone" defaultValue={selectedCustomer.phone} /></label>
+          <label>Email<input name="email" type="email" defaultValue={selectedCustomer.email} /></label>
+          <label>Preferred language<select name="language" defaultValue={selectedCustomer.preferred_language}><option>English</option><option>Spanish</option></select></label>
+          <label className="wide">Address<input name="address" defaultValue={selectedCustomer.address} /></label>
+          <label className="wide">Notes<textarea name="notes" defaultValue={selectedCustomer.notes} /></label>
+          <button className="gold" type="submit">Save customer</button>
+        </form> : <div className="customer-summary"><div><small>Phone</small><b>{selectedCustomer.phone || "—"}</b></div><div><small>Email</small><b>{selectedCustomer.email || "—"}</b></div><div><small>Language</small><b>{selectedCustomer.preferred_language}</b></div><div><small>Address</small><b>{selectedCustomer.address || "—"}</b></div><div className="wide"><small>Notes</small><b>{selectedCustomer.notes || "—"}</b></div></div>}
+        <div className="row vehicle-heading"><h3>Vehicles</h3><span className="muted">{customerVehicles.length} on file</span></div>
+        <div className="vehicle-list">{customerVehicles.length === 0 && <p className="muted">No vehicles added.</p>}{customerVehicles.map(vehicle => <div className="vehicle-row" key={vehicle.id}><div><b>{vehicle.year ?? "—"} {vehicle.make ?? ""} {vehicle.model ?? ""}</b><span>VIN: {vehicle.vin || "Not entered"}</span></div>{isOperationalStaff && <button className="logout" onClick={() => deleteVehicle(vehicle)}>Delete</button>}</div>)}</div>
+        {isOperationalStaff && <form action={addVehicle} className="vehicle-form"><label>Year<input name="year" type="number" min="1900" max="2100" /></label><label>Make<input name="make" /></label><label>Model<input name="model" /></label><label>VIN<input name="vin" maxLength={17} /></label><button className="gold" type="submit">Add vehicle</button></form>}
+        {customerMessage && <p className="document-message" role="status">{customerMessage}</p>}
+      </div></div>}
       {selectedReceipt && <div className="modal receipt-modal"><div className="receipt" role="dialog" aria-label="Payment receipt">
         <div className="row"><div><h2>Freedom Auto Insurance</h2><p>Payment Receipt</p></div><button className="close no-print" onClick={() => setSelectedReceipt(null)}>×</button></div>
         <div className="receipt-number">{selectedReceipt.receipt_number}</div><dl><div><dt>Customer</dt><dd>{selectedReceipt.customers?.full_name}</dd></div><div><dt>Date</dt><dd>{new Date(selectedReceipt.created_at).toLocaleString()}</dd></div><div><dt>Method</dt><dd>{selectedReceipt.method}</dd></div><div><dt>Carrier payment</dt><dd>${Number(selectedReceipt.carrier_payment).toFixed(2)}</dd></div><div><dt>Agency fee</dt><dd>${Number(selectedReceipt.agency_fee).toFixed(2)}</dd></div><div className="receipt-total"><dt>Total received</dt><dd>${Number(selectedReceipt.amount).toFixed(2)}</dd></div><div><dt>Status</dt><dd>{selectedReceipt.status}</dd></div></dl>
@@ -669,11 +780,11 @@ function Metric({label,value,note}:{label:string,value:string,note:string}) {
   return <div className="metric"><span>{label}</span><strong>{value}</strong><small>{note}</small></div>;
 }
 
-function CustomerTable({customers}:{customers:Customer[]}) {
+function CustomerTable({customers,onSelect}:{customers:Customer[];onSelect?:(id:string)=>void}) {
   return <div className="table">
     <div className="tr th"><span>Customer</span><span>Phone</span><span>Carrier</span><span>Status</span></div>
-    {customers.map(c => <div className="tr" key={c.id}>
+    {customers.map(c => <button type="button" className="tr customer-link" key={c.id} onClick={() => onSelect?.(c.id)}>
       <b>{c.name}</b><span>{c.phone}</span><span>{c.carrier}</span><span className={`badge ${c.status.replace(" ","-").toLowerCase()}`}>{c.status}</span>
-    </div>)}
+    </button>)}
   </div>;
 }
