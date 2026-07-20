@@ -439,6 +439,27 @@ export default function Home() {
     setEmployeeMessage("Employee access updated successfully.");
   }
 
+  async function inviteEmployee(formData: FormData) {
+    setEmployeeMessage("");
+    const supabase = createClient();
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { setEmployeeMessage("Your session expired. Please sign in again."); return; }
+    const response = await fetch("/api/employees/invite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({
+        fullName: String(formData.get("full_name") || "").trim(),
+        email: String(formData.get("email") || "").trim().toLowerCase(),
+        role: String(formData.get("role") || "agent"),
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) { setEmployeeMessage(result.error || "The invitation could not be sent."); return; }
+    const { data } = await supabase.from("profiles").select("id,full_name,email,role,active").order("full_name");
+    setStaff((data ?? []) as StaffProfile[]);
+    setEmployeeMessage("Invitation sent. The employee must open the email and create a password.");
+  }
+
   return (
     <main className="shell">
       <aside>
@@ -593,6 +614,12 @@ export default function Home() {
             <div className="row"><div><h2>Employee Management</h2><p className="muted">Only the agency owner can change roles or employee access.</p></div><span className="badge active">Owner access</span></div>
             {employeeMessage && <p className="document-message" role="status">{employeeMessage}</p>}
           </div>
+          <div className="panel"><h2>Invite Employee</h2><p className="muted">The employee will receive a secure email link to create a password.</p><form action={inviteEmployee} className="invite-form">
+            <label>Full name<input name="full_name" required /></label>
+            <label>Email address<input name="email" type="email" required /></label>
+            <label>Role<select name="role" defaultValue="agent"><option value="manager">Manager</option><option value="agent">Agent</option><option value="csr">Customer service</option><option value="accounting">Accounting</option></select></label>
+            <button className="gold" type="submit">Send invitation</button>
+          </form></div>
           <div className="employee-list">
             {staff.length === 0 && <div className="panel"><p className="muted">No employee profiles found.</p></div>}
             {staff.map(person => <form action={manageEmployee} className="panel employee-card" key={person.id}>
