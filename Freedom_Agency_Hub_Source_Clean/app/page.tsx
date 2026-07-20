@@ -377,9 +377,10 @@ export default function Home() {
     const reason = window.prompt("Reason for voiding this payment:");
     if (!reason?.trim()) return;
     const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    const { error } = await supabase.from("payments").update({ status: "voided", void_reason: reason.trim(), voided_by: user.id, voided_at: new Date().toISOString() }).eq("id", payment.id);
+    const { error } = await supabase.rpc("void_payment", {
+      target_payment_id: payment.id,
+      void_explanation: reason.trim(),
+    });
     if (error) { setPaymentMessage(error.message); return; }
     setPayments(prev => prev.map(item => item.id === payment.id ? { ...item, status: "voided" } : item));
     setPaymentMessage("Payment voided. The original record remains in the audit trail.");
