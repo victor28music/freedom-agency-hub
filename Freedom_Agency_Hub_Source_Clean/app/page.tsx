@@ -465,6 +465,8 @@ export default function Home() {
     setEmployeeMessage("Invitation sent. The employee must open the email and create a password.");
   }
 
+  const isOperationalStaff = ["owner", "manager", "agent", "csr"].includes(userRole);
+
   return (
     <main className="shell">
       <aside>
@@ -480,7 +482,7 @@ export default function Home() {
       <section className="content">
         <header>
           <div><h1>{section}</h1><p>Freedom Auto Insurance operations</p></div>
-          <div className="header-actions"><button className="gold" onClick={() => setShowCustomer(true)}>+ New Customer</button><button className="logout" onClick={async () => { await createClient().auth.signOut(); window.location.assign("/login"); }}>Sign out</button></div>
+          <div className="header-actions">{isOperationalStaff && <button className="gold" onClick={() => setShowCustomer(true)}>+ New Customer</button>}<button className="logout" onClick={async () => { await createClient().auth.signOut(); window.location.assign("/login"); }}>Sign out</button></div>
         </header>
 
         {section === "Dashboard" && <>
@@ -522,7 +524,7 @@ export default function Home() {
         </>}
 
         {section === "Quotes" && <>
-          <div className="panel"><h2>New Carrier Quote</h2><form action={addQuote} className="quote-form">
+          {isOperationalStaff && <div className="panel"><h2>New Carrier Quote</h2><form action={addQuote} className="quote-form">
             <label>Customer<select name="customer_id" required defaultValue=""><option value="" disabled>Select a customer</option>{customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
             <label>Carrier<input name="carrier" placeholder="Carrier name" required /></label>
             <label>Quote number<input name="quote_number" placeholder="Optional" /></label>
@@ -533,20 +535,20 @@ export default function Home() {
             <label className="wide">Coverage summary<textarea name="coverage_summary" placeholder="Liability limits, deductibles, roadside, rental…" required /></label>
             <label className="wide">Notes<textarea name="notes" placeholder="Optional internal notes" /></label>
             <button className="gold" type="submit">Save quote</button>
-          </form>{quoteMessage && <p className="document-message" role="status">{quoteMessage}</p>}</div>
+          </form>{quoteMessage && <p className="document-message" role="status">{quoteMessage}</p>}</div>}
           <div className="panel"><div className="row"><h2>Carrier Comparison</h2><span className="muted">Lowest monthly price first</span></div><div className="quote-list">
             {quotes.length === 0 && <p className="muted">No quotes saved.</p>}
             {quotes.map((quote,index) => <div className={`quote-card ${index === 0 ? "best" : ""}`} key={quote.id}>
               <div><div className="quote-title"><b>{quote.carrier}</b>{index === 0 && <span className="best-label">Lowest monthly</span>}</div><span>{quote.customers?.full_name ?? "Customer"} · {quote.coverage_summary}</span></div>
               <div className="quote-price"><small>Down</small><b>${Number(quote.down_payment).toFixed(2)}</b></div>
               <div className="quote-price"><small>Monthly</small><b>${Number(quote.monthly_payment).toFixed(2)}</b></div>
-              <select value={quote.status} onChange={event => setQuoteStatus(quote.id, event.target.value as Quote["status"])}><option value="draft">Draft</option><option value="presented">Presented</option><option value="accepted">Accepted</option><option value="declined">Declined</option><option value="expired">Expired</option></select>
+              <select value={quote.status} disabled={!isOperationalStaff} onChange={event => setQuoteStatus(quote.id, event.target.value as Quote["status"])}><option value="draft">Draft</option><option value="presented">Presented</option><option value="accepted">Accepted</option><option value="declined">Declined</option><option value="expired">Expired</option></select>
             </div>)}
           </div></div>
         </>}
 
         {section === "Policies" && <>
-          <div className="panel"><h2>Add Policy</h2><form action={addPolicy} className="quote-form">
+          {isOperationalStaff && <div className="panel"><h2>Add Policy</h2><form action={addPolicy} className="quote-form">
             <label>Customer<select name="customer_id" required defaultValue=""><option value="" disabled>Select a customer</option>{customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
             <label>Carrier<input name="carrier" required /></label>
             <label>Policy number<input name="policy_number" required /></label>
@@ -557,14 +559,14 @@ export default function Home() {
             <label>Monthly premium<input name="monthly_premium" type="number" min="0" step="0.01" required /></label>
             <label className="wide">Coverage summary<textarea name="coverage_summary" required placeholder="Limits, deductibles, vehicles, endorsements…" /></label>
             <button className="gold" type="submit">Save policy</button>
-          </form>{policyMessage && <p className="document-message" role="status">{policyMessage}</p>}</div>
+          </form>{policyMessage && <p className="document-message" role="status">{policyMessage}</p>}</div>}
           <div className="panel"><div className="row"><h2>Policy Book</h2><span className="muted">Renewals ordered by expiration</span></div><div className="quote-list">
             {policies.length === 0 && <p className="muted">No policies saved.</p>}
             {policies.map(policy => { const days = policy.expiration_date ? Math.ceil((new Date(`${policy.expiration_date}T12:00:00`).getTime() - Date.now()) / 86400000) : null; return <div className={`policy-card ${days !== null && days <= 30 ? "renewal-due" : ""}`} key={policy.id}>
               <div><b>{policy.customers?.full_name ?? "Customer"}</b><span>{policy.carrier} · #{policy.policy_number}</span><small>{policy.coverage_summary}</small></div>
               <div className="quote-price"><small>Monthly</small><b>${Number(policy.monthly_premium ?? 0).toFixed(2)}</b></div>
               <div className="quote-price"><small>Expires</small><b>{policy.expiration_date ?? "—"}</b><span>{days === null ? "" : days < 0 ? "Expired" : `${days} days`}</span></div>
-              <select value={policy.status} onChange={event => setPolicyStatus(policy.id,event.target.value)}><option value="active">Active</option><option value="pending">Pending</option><option value="cancel_notice">Cancel notice</option><option value="canceled">Canceled</option><option value="expired">Expired</option><option value="rewritten">Rewritten</option></select>
+              <select value={policy.status} disabled={!isOperationalStaff} onChange={event => setPolicyStatus(policy.id,event.target.value)}><option value="active">Active</option><option value="pending">Pending</option><option value="cancel_notice">Cancel notice</option><option value="canceled">Canceled</option><option value="expired">Expired</option><option value="rewritten">Rewritten</option></select>
             </div>})}
           </div></div>
         </>}
