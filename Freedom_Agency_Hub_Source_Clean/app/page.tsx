@@ -122,8 +122,13 @@ export default function Home() {
     const supabase = createClient();
     supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) return;
-      const { data } = await supabase.from("profiles").select("role").eq("id", user.id).single();
-      setUserRole(data?.role ?? "");
+      const { data } = await supabase.from("profiles").select("role,active").eq("id", user.id).single();
+      if (!data || !data.active) {
+        await supabase.auth.signOut();
+        window.location.assign("/login?access=inactive");
+        return;
+      }
+      setUserRole(data.role ?? "");
     });
     supabase.from("customers").select("id,full_name,phone,policies(carrier,status)").order("created_at", { ascending: false }).then(({ data }) => {
       setCustomers((data ?? []).map((row: any) => ({

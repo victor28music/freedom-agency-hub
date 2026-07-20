@@ -1,11 +1,16 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { createClient } from "../../lib/supabase/client";
 
 export default function LoginPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("access") === "inactive") setError("This employee account has been deactivated. Contact the agency owner.");
+    if (params.get("invitation") === "accepted") setError("Password created successfully. Sign in with your employee email.");
+  }, []);
   async function signIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true); setError("");
