@@ -66,6 +66,40 @@ type Quote = {
   customers: { full_name: string } | null;
 };
 
+type QuoteIntake = {
+  id: string;
+  customer_id: string;
+  status: "draft" | "ready" | "quoted" | "bound" | "closed";
+  requested_bodily_injury: string | null;
+  requested_property_damage: string | null;
+  uninsured_motorist: boolean;
+  comprehensive_deductible: number | null;
+  collision_deductible: number | null;
+  roadside_assistance: boolean;
+  rental_reimbursement: boolean;
+  prior_carrier: string | null;
+  prior_policy_expiration: string | null;
+  continuous_coverage_months: number | null;
+  lapse_days: number;
+  homeowner: boolean;
+  garaging_address: string | null;
+  usage_notes: string | null;
+  internal_notes: string | null;
+  created_at: string;
+  customers: { full_name: string } | null;
+};
+
+type DrivingIncident = {
+  id: string;
+  driver_id: string | null;
+  incident_type: "accident" | "violation" | "claim" | "suspension" | "other";
+  incident_date: string | null;
+  description: string | null;
+  at_fault: boolean | null;
+  estimated_amount: number | null;
+  drivers: { full_name: string } | null;
+};
+
 type Policy = {
   id: string;
   carrier: string | null;
@@ -138,6 +172,12 @@ export default function Home() {
   const [userRole, setUserRole] = useState("");
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [quoteMessage, setQuoteMessage] = useState("");
+  const [quoteIntakes, setQuoteIntakes] = useState<QuoteIntake[]>([]);
+  const [intakeMessage, setIntakeMessage] = useState("");
+  const [selectedIntake, setSelectedIntake] = useState<QuoteIntake | null>(null);
+  const [intakeDrivers, setIntakeDrivers] = useState<Driver[]>([]);
+  const [intakeVehicles, setIntakeVehicles] = useState<Vehicle[]>([]);
+  const [drivingIncidents, setDrivingIncidents] = useState<DrivingIncident[]>([]);
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [policyMessage, setPolicyMessage] = useState("");
   const [payments, setPayments] = useState<Payment[]>([]);
@@ -250,6 +290,17 @@ export default function Home() {
       .select("id,carrier,quote_number,coverage_summary,down_payment,monthly_payment,term_months,valid_until,status,customers(full_name)")
       .order("monthly_payment", { ascending: true })
       .then(({ data }) => setQuotes((data ?? []) as unknown as Quote[]));
+  }, [section]);
+
+  useEffect(() => {
+    if (section !== "Quote Intake") return;
+    createClient().from("quote_intakes")
+      .select("id,customer_id,status,requested_bodily_injury,requested_property_damage,uninsured_motorist,comprehensive_deductible,collision_deductible,roadside_assistance,rental_reimbursement,prior_carrier,prior_policy_expiration,continuous_coverage_months,lapse_days,homeowner,garaging_address,usage_notes,internal_notes,created_at,customers(full_name)")
+      .order("created_at", { ascending: false })
+      .then(({ data, error }) => {
+        if (error) setIntakeMessage(error.message);
+        else setQuoteIntakes((data ?? []) as unknown as QuoteIntake[]);
+      });
   }, [section]);
 
   async function addCustomer(formData: FormData) {
@@ -468,6 +519,102 @@ export default function Home() {
     setQuoteMessage("Quote saved.");
   }
 
+  function intakePayload(formData: FormData) {
+    return {
+      requested_bodily_injury: String(formData.get("requested_bodily_injury") || "").trim() || null,
+      requested_property_damage: String(formData.get("requested_property_damage") || "").trim() || null,
+      uninsured_motorist: formData.get("uninsured_motorist") === "on",
+      comprehensive_deductible: Number(formData.get("comprehensive_deductible")) || null,
+      collision_deductible: Number(formData.get("collision_deductible")) || null,
+      roadside_assistance: formData.get("roadside_assistance") === "on",
+      rental_reimbursement: formData.get("rental_reimbursement") === "on",
+      prior_carrier: String(formData.get("prior_carrier") || "").trim() || null,
+      prior_policy_expiration: String(formData.get("prior_policy_expiration") || "") || null,
+      continuous_coverage_months: Number(formData.get("continuous_coverage_months")) || null,
+      lapse_days: Number(formData.get("lapse_days")) || 0,
+      homeowner: formData.get("homeowner") === "on",
+      garaging_address: String(formData.get("garaging_address") || "").trim() || null,
+      usage_notes: String(formData.get("usage_notes") || "").trim() || null,
+      internal_notes: String(formData.get("internal_notes") || "").trim() || null,
+    };
+  }
+
+  async function addQuoteIntake(formData: FormData) {
+    setIntakeMessage("");
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    const { data: profile } = user ? await supabase.from("profiles").select("agency_id").eq("id", user.id).single() : { data: null };
+    if (!user || !profile) return;
+    const { data, error } = await supabase.from("quote_intakes").insert({
+      agency_id: profile.agency_id,
+      customer_id: String(formData.get("customer_id")),
+      status: "draft",
+      ...intakePayload(formData),
+      created_by: user.id,
+    }).select("id,customer_id,status,requested_bodily_injury,requested_property_damage,uninsured_motorist,comprehensive_deductible,collision_deductible,roadside_assistance,rental_reimbursement,prior_carrier,prior_policy_expiration,continuous_coverage_months,lapse_days,homeowner,garaging_address,usage_notes,internal_notes,created_at,customers(full_name)").single();
+    if (error) { setIntakeMessage(error.message); return; }
+    if (data) setQuoteIntakes(previous => [data as unknown as QuoteIntake, ...previous]);
+    setIntakeMessage("Quote intake worksheet created.");
+  }
+
+  async function openQuoteIntake(intake: QuoteIntake) {
+    setIntakeMessage("");
+    const supabase = createClient();
+    const [{ data: drivers }, { data: vehicles }, { data: incidents }] = await Promise.all([
+      supabase.from("drivers").select("id,customer_id,full_name,date_of_birth,relationship,license_state,license_last4,license_status").eq("customer_id", intake.customer_id).order("created_at"),
+      supabase.from("vehicles").select("id,customer_id,year,make,model,vin").eq("customer_id", intake.customer_id).order("created_at"),
+      supabase.from("driving_incidents").select("id,driver_id,incident_type,incident_date,description,at_fault,estimated_amount,drivers(full_name)").eq("quote_intake_id", intake.id).order("incident_date", { ascending: false }),
+    ]);
+    setSelectedIntake(intake);
+    setIntakeDrivers((drivers ?? []) as Driver[]);
+    setIntakeVehicles((vehicles ?? []) as Vehicle[]);
+    setDrivingIncidents((incidents ?? []) as unknown as DrivingIncident[]);
+  }
+
+  async function updateQuoteIntake(formData: FormData) {
+    if (!selectedIntake) return;
+    setIntakeMessage("");
+    const status = String(formData.get("status")) as QuoteIntake["status"];
+    const updates = { status, ...intakePayload(formData) };
+    const { error } = await createClient().from("quote_intakes").update(updates).eq("id", selectedIntake.id);
+    if (error) { setIntakeMessage(error.message); return; }
+    setSelectedIntake(previous => previous ? { ...previous, ...updates } : previous);
+    setQuoteIntakes(previous => previous.map(item => item.id === selectedIntake.id ? { ...item, ...updates } : item));
+    setIntakeMessage("Worksheet updated.");
+  }
+
+  async function addDrivingIncident(formData: FormData) {
+    if (!selectedIntake) return;
+    setIntakeMessage("");
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    const { data: profile } = user ? await supabase.from("profiles").select("agency_id").eq("id", user.id).single() : { data: null };
+    if (!user || !profile) return;
+    const driverId = String(formData.get("driver_id") || "");
+    const { data, error } = await supabase.from("driving_incidents").insert({
+      agency_id: profile.agency_id,
+      quote_intake_id: selectedIntake.id,
+      driver_id: driverId || null,
+      incident_type: String(formData.get("incident_type")),
+      incident_date: String(formData.get("incident_date") || "") || null,
+      description: String(formData.get("description") || "").trim() || null,
+      at_fault: formData.get("at_fault") === "on",
+      estimated_amount: Number(formData.get("estimated_amount")) || null,
+      created_by: user.id,
+    }).select("id,driver_id,incident_type,incident_date,description,at_fault,estimated_amount,drivers(full_name)").single();
+    if (error) { setIntakeMessage(error.message); return; }
+    if (data) setDrivingIncidents(previous => [data as unknown as DrivingIncident, ...previous]);
+    setIntakeMessage("Incident added.");
+  }
+
+  async function deleteDrivingIncident(incident: DrivingIncident) {
+    if (!window.confirm("Delete this driving incident?")) return;
+    const { error } = await createClient().from("driving_incidents").delete().eq("id", incident.id);
+    if (error) { setIntakeMessage(error.message); return; }
+    setDrivingIncidents(previous => previous.filter(item => item.id !== incident.id));
+    setIntakeMessage("Incident deleted.");
+  }
+
   async function setQuoteStatus(id: string, status: Quote["status"]) {
     const { error } = await createClient().from("quotes").update({ status, updated_at: new Date().toISOString() }).eq("id", id);
     if (error) { setQuoteMessage(error.message); return; }
@@ -633,7 +780,7 @@ export default function Home() {
       <aside>
         <div className="brand"><div className="logo">F</div><div><b>Freedom Agency Hub</b><span>Freedom Auto Insurance</span></div></div>
         <nav>
-          {["Dashboard","Customers","Documents","Quotes","Policies","Payments","Tasks", ...(userRole === "owner" ? ["Employees"] : [])].map(item =>
+          {["Dashboard","Customers","Documents","Quote Intake","Quotes","Policies","Payments","Tasks", ...(userRole === "owner" ? ["Employees"] : [])].map(item =>
             <button key={item} className={section === item ? "active" : ""} onClick={() => setSection(item)}>{item}</button>
           )}
         </nav>
@@ -681,6 +828,29 @@ export default function Home() {
               <div><b>{document.original_filename}</b><span>{document.customers?.full_name ?? "Customer"} · {(document.file_size / 1048576).toFixed(2)} MB</span></div>
               <div className="document-actions"><button className="logout" onClick={() => openDocument(document.storage_path)}>Open</button>{["owner","manager"].includes(userRole) && <button className="logout" onClick={() => deleteDocument(document)}>Delete</button>}</div>
             </div>)}
+          </div></div>
+        </>}
+
+        {section === "Quote Intake" && <>
+          {isOperationalStaff && <div className="panel"><h2>New Auto Quote Intake</h2><p className="muted">Collect the risk once, then use it to prepare carrier quotes.</p><form action={addQuoteIntake} className="intake-form">
+            <label>Customer<select name="customer_id" required defaultValue=""><option value="" disabled>Select a customer</option>{customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select></label>
+            <label>Bodily injury limits<input name="requested_bodily_injury" placeholder="Example: 25/50" /></label>
+            <label>Property damage<input name="requested_property_damage" placeholder="Example: 25" /></label>
+            <label>Comprehensive deductible<input name="comprehensive_deductible" type="number" min="0" step="1" /></label>
+            <label>Collision deductible<input name="collision_deductible" type="number" min="0" step="1" /></label>
+            <label>Prior carrier<input name="prior_carrier" /></label>
+            <label>Prior policy expiration<input name="prior_policy_expiration" type="date" /></label>
+            <label>Continuous coverage (months)<input name="continuous_coverage_months" type="number" min="0" /></label>
+            <label>Lapse days<input name="lapse_days" type="number" min="0" defaultValue="0" /></label>
+            <label className="wide">Garaging address<input name="garaging_address" /></label>
+            <div className="intake-checks"><label><input name="uninsured_motorist" type="checkbox" /> Uninsured motorist</label><label><input name="roadside_assistance" type="checkbox" /> Roadside assistance</label><label><input name="rental_reimbursement" type="checkbox" /> Rental reimbursement</label><label><input name="homeowner" type="checkbox" /> Homeowner</label></div>
+            <label className="wide">Vehicle usage notes<textarea name="usage_notes" placeholder="Commute, annual mileage, business use, garaging details…" /></label>
+            <label className="wide">Internal notes<textarea name="internal_notes" /></label>
+            <button className="gold" type="submit">Create worksheet</button>
+          </form></div>}
+          <div className="panel"><div className="row"><h2>Quote Intake Worklist</h2><span className="muted">{quoteIntakes.length} worksheets</span></div>{intakeMessage && <p className="document-message" role="status">{intakeMessage}</p>}<div className="intake-list">
+            {quoteIntakes.length === 0 && <p className="muted">No quote intake worksheets created.</p>}
+            {quoteIntakes.map(intake => <div className="intake-card" key={intake.id}><div><b>{intake.customers?.full_name ?? "Customer"}</b><span>{intake.prior_carrier || "No prior carrier"} · Created {new Date(intake.created_at).toLocaleDateString()}</span></div><span className={`badge intake-${intake.status}`}>{intake.status}</span><div className="coverage-summary"><small>Requested limits</small><b>{intake.requested_bodily_injury || "—"} / PD {intake.requested_property_damage || "—"}</b></div><button className="gold" onClick={() => openQuoteIntake(intake)}>Open worksheet</button></div>)}
           </div></div>
         </>}
 
@@ -801,7 +971,7 @@ export default function Home() {
           </div>
         </>}
 
-        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && section !== "Quotes" && section !== "Policies" && section !== "Payments" && section !== "Tasks" && section !== "Employees" && <div className="panel empty">
+        {section !== "Dashboard" && section !== "Customers" && section !== "Documents" && section !== "Quote Intake" && section !== "Quotes" && section !== "Policies" && section !== "Payments" && section !== "Tasks" && section !== "Employees" && <div className="panel empty">
           <h2>{section}</h2>
           <p>This production module is scaffolded and ready to connect to Supabase.</p>
         </div>}
@@ -839,6 +1009,30 @@ export default function Home() {
         <div className="row activity-heading"><h3>Customer Activity</h3><span className="muted">Newest first</span></div>
         <div className="activity-list">{customerActivity.length === 0 && <p className="muted">No customer activity recorded.</p>}{customerActivity.map(activity => <div className="activity-row" key={activity.id}><span className={`activity-type ${activity.type.toLowerCase()}`}>{activity.type}</span><div><b>{activity.title}</b><span>{activity.detail}</span></div><time>{new Date(activity.date).toLocaleString()}</time></div>)}</div>
         {customerMessage && <p className="document-message" role="status">{customerMessage}</p>}
+      </div></div>}
+      {selectedIntake && <div className="modal customer-modal"><div className="customer-profile intake-workspace" role="dialog" aria-label="Quote intake worksheet">
+        <div className="row"><div><h2>{selectedIntake.customers?.full_name ?? "Customer"}</h2><p>Auto Quote Intake Worksheet</p></div><button className="close" onClick={() => { setSelectedIntake(null); setIntakeMessage(""); }}>×</button></div>
+        <div className="intake-assets"><div><small>Drivers</small><b>{intakeDrivers.length}</b><span>{intakeDrivers.map(driver => driver.full_name).join(", ") || "None"}</span></div><div><small>Vehicles</small><b>{intakeVehicles.length}</b><span>{intakeVehicles.map(vehicle => `${vehicle.year ?? ""} ${vehicle.make ?? ""} ${vehicle.model ?? ""}`.trim()).join(", ") || "None"}</span></div></div>
+        {isOperationalStaff ? <form action={updateQuoteIntake} className="intake-form workspace-form">
+          <label>Status<select name="status" defaultValue={selectedIntake.status}><option value="draft">Draft</option><option value="ready">Ready for carriers</option><option value="quoted">Quoted</option><option value="bound">Bound</option><option value="closed">Closed</option></select></label>
+          <label>Bodily injury limits<input name="requested_bodily_injury" defaultValue={selectedIntake.requested_bodily_injury ?? ""} /></label>
+          <label>Property damage<input name="requested_property_damage" defaultValue={selectedIntake.requested_property_damage ?? ""} /></label>
+          <label>Comprehensive deductible<input name="comprehensive_deductible" type="number" min="0" defaultValue={selectedIntake.comprehensive_deductible ?? ""} /></label>
+          <label>Collision deductible<input name="collision_deductible" type="number" min="0" defaultValue={selectedIntake.collision_deductible ?? ""} /></label>
+          <label>Prior carrier<input name="prior_carrier" defaultValue={selectedIntake.prior_carrier ?? ""} /></label>
+          <label>Prior policy expiration<input name="prior_policy_expiration" type="date" defaultValue={selectedIntake.prior_policy_expiration ?? ""} /></label>
+          <label>Continuous coverage (months)<input name="continuous_coverage_months" type="number" min="0" defaultValue={selectedIntake.continuous_coverage_months ?? ""} /></label>
+          <label>Lapse days<input name="lapse_days" type="number" min="0" defaultValue={selectedIntake.lapse_days} /></label>
+          <label className="wide">Garaging address<input name="garaging_address" defaultValue={selectedIntake.garaging_address ?? ""} /></label>
+          <div className="intake-checks"><label><input name="uninsured_motorist" type="checkbox" defaultChecked={selectedIntake.uninsured_motorist} /> Uninsured motorist</label><label><input name="roadside_assistance" type="checkbox" defaultChecked={selectedIntake.roadside_assistance} /> Roadside assistance</label><label><input name="rental_reimbursement" type="checkbox" defaultChecked={selectedIntake.rental_reimbursement} /> Rental reimbursement</label><label><input name="homeowner" type="checkbox" defaultChecked={selectedIntake.homeowner} /> Homeowner</label></div>
+          <label className="wide">Vehicle usage notes<textarea name="usage_notes" defaultValue={selectedIntake.usage_notes ?? ""} /></label>
+          <label className="wide">Internal notes<textarea name="internal_notes" defaultValue={selectedIntake.internal_notes ?? ""} /></label>
+          <button className="gold" type="submit">Save worksheet</button>
+        </form> : <div className="customer-summary"><div><small>Status</small><b>{selectedIntake.status}</b></div><div><small>Coverage</small><b>{selectedIntake.requested_bodily_injury || "—"} / {selectedIntake.requested_property_damage || "—"}</b></div><div><small>Prior carrier</small><b>{selectedIntake.prior_carrier || "—"}</b></div><div><small>Lapse</small><b>{selectedIntake.lapse_days} days</b></div></div>}
+        <div className="row incident-heading"><h3>Accidents, Violations and Claims</h3><span className="muted">{drivingIncidents.length} recorded</span></div>
+        <div className="incident-list">{drivingIncidents.length === 0 && <p className="muted">No incidents reported.</p>}{drivingIncidents.map(incident => <div className="incident-row" key={incident.id}><div><b>{incident.incident_type}</b><span>{incident.drivers?.full_name ?? "Unassigned driver"} · {incident.incident_date || "No date"}</span><small>{incident.description || "No description"}{incident.at_fault ? " · At fault" : ""}</small></div>{["owner","manager"].includes(userRole) && <button className="logout" onClick={() => deleteDrivingIncident(incident)}>Delete</button>}</div>)}</div>
+        {isOperationalStaff && <form action={addDrivingIncident} className="incident-form"><label>Driver<select name="driver_id" defaultValue=""><option value="">Unassigned</option>{intakeDrivers.map(driver => <option key={driver.id} value={driver.id}>{driver.full_name}</option>)}</select></label><label>Type<select name="incident_type" defaultValue="accident"><option value="accident">Accident</option><option value="violation">Violation</option><option value="claim">Claim</option><option value="suspension">Suspension</option><option value="other">Other</option></select></label><label>Date<input name="incident_date" type="date" /></label><label>Estimated amount<input name="estimated_amount" type="number" min="0" step="0.01" /></label><label className="wide">Description<input name="description" /></label><label className="check-label"><input name="at_fault" type="checkbox" /> At fault</label><button className="gold" type="submit">Add incident</button></form>}
+        {intakeMessage && <p className="document-message" role="status">{intakeMessage}</p>}
       </div></div>}
       {selectedReceipt && <div className="modal receipt-modal"><div className="receipt" role="dialog" aria-label="Payment receipt">
         <div className="row"><div><h2>Freedom Auto Insurance</h2><p>Payment Receipt</p></div><button className="close no-print" onClick={() => setSelectedReceipt(null)}>×</button></div>
