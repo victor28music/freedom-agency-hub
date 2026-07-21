@@ -24,6 +24,14 @@ type Vehicle = {
   vin: string | null;
 };
 
+type CustomerActivity = {
+  id: string;
+  type: "Quote" | "Policy" | "Payment" | "Document" | "Task";
+  title: string;
+  detail: string;
+  date: string;
+};
+
 type AgencyDocument = {
   id: string;
   original_filename: string;
@@ -110,6 +118,7 @@ export default function Home() {
   const [showCustomer, setShowCustomer] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customerVehicles, setCustomerVehicles] = useState<Vehicle[]>([]);
+  const [customerActivity, setCustomerActivity] = useState<CustomerActivity[]>([]);
   const [customerMessage, setCustomerMessage] = useState("");
   const [documents, setDocuments] = useState<AgencyDocument[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -252,9 +261,14 @@ export default function Home() {
   async function openCustomer(customerId: string) {
     setCustomerMessage("");
     const supabase = createClient();
-    const [{ data: customer, error }, { data: vehicles }] = await Promise.all([
+    const [{ data: customer, error }, { data: vehicles }, { data: customerQuotes }, { data: customerPolicies }, { data: customerPayments }, { data: customerDocuments }, { data: customerTasks }] = await Promise.all([
       supabase.from("customers").select("id,full_name,phone,email,preferred_language,address,notes,policies(carrier,status)").eq("id", customerId).single(),
       supabase.from("vehicles").select("id,customer_id,year,make,model,vin").eq("customer_id", customerId).order("created_at"),
+      supabase.from("quotes").select("id,carrier,status,monthly_payment,created_at").eq("customer_id", customerId),
+      supabase.from("policies").select("id,carrier,policy_number,status,effective_date,created_at").eq("customer_id", customerId),
+      supabase.from("payments").select("id,receipt_number,amount,status,created_at").eq("customer_id", customerId),
+      supabase.from("documents").select("id,original_filename,created_at").eq("customer_id", customerId),
+      supabase.from("tasks").select("id,title,status,created_at").eq("customer_id", customerId),
     ]);
     if (error || !customer) { setCustomerMessage(error?.message || "Customer could not be opened."); return; }
     const row = customer as any;
@@ -270,6 +284,14 @@ export default function Home() {
       status: row.policies?.[0]?.status === "active" ? "Active" : "New",
     });
     setCustomerVehicles((vehicles ?? []) as Vehicle[]);
+    const activity: CustomerActivity[] = [
+      ...(customerQuotes ?? []).map((item: any) => ({ id: `quote-${item.id}`, type: "Quote" as const, title: `${item.carrier} quote`, detail: `${item.status} · $${Number(item.monthly_payment ?? 0).toFixed(2)}/month`, date: item.created_at })),
+      ...(customerPolicies ?? []).map((item: any) => ({ id: `policy-${item.id}`, type: "Policy" as const, title: `${item.carrier || "Carrier"} policy`, detail: `${item.policy_number || "No policy number"} · ${item.status}`, date: item.created_at || item.effective_date })),
+      ...(customerPayments ?? []).map((item: any) => ({ id: `payment-${item.id}`, type: "Payment" as const, title: `Payment ${item.receipt_number || "receipt"}`, detail: `$${Number(item.amount ?? 0).toFixed(2)} · ${item.status}`, date: item.created_at })),
+      ...(customerDocuments ?? []).map((item: any) => ({ id: `document-${item.id}`, type: "Document" as const, title: item.original_filename, detail: "Document uploaded", date: item.created_at })),
+      ...(customerTasks ?? []).map((item: any) => ({ id: `task-${item.id}`, type: "Task" as const, title: item.title, detail: item.status.replace("_", " "), date: item.created_at })),
+    ].filter(item => item.date).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    setCustomerActivity(activity);
   }
 
   async function updateCustomer(formData: FormData) {
@@ -765,6 +787,8 @@ export default function Home() {
         <div className="row vehicle-heading"><h3>Vehicles</h3><span className="muted">{customerVehicles.length} on file</span></div>
         <div className="vehicle-list">{customerVehicles.length === 0 && <p className="muted">No vehicles added.</p>}{customerVehicles.map(vehicle => <div className="vehicle-row" key={vehicle.id}><div><b>{vehicle.year ?? "—"} {vehicle.make ?? ""} {vehicle.model ?? ""}</b><span>VIN: {vehicle.vin || "Not entered"}</span></div>{isOperationalStaff && <button className="logout" onClick={() => deleteVehicle(vehicle)}>Delete</button>}</div>)}</div>
         {isOperationalStaff && <form action={addVehicle} className="vehicle-form"><label>Year<input name="year" type="number" min="1900" max="2100" /></label><label>Make<input name="make" /></label><label>Model<input name="model" /></label><label>VIN<input name="vin" maxLength={17} /></label><button className="gold" type="submit">Add vehicle</button></form>}
+        <div className="row activity-heading"><h3>Customer Activity</h3><span className="muted">Newest first</span></div>
+        <div className="activity-list">{customerActivity.length === 0 && <p className="muted">No customer activity recorded.</p>}{customerActivity.map(activity => <div className="activity-row" key={activity.id}><span className={`activity-type ${activity.type.toLowerCase()}`}>{activity.type}</span><div><b>{activity.title}</b><span>{activity.detail}</span></div><time>{new Date(activity.date).toLocaleString()}</time></div>)}</div>
         {customerMessage && <p className="document-message" role="status">{customerMessage}</p>}
       </div></div>}
       {selectedReceipt && <div className="modal receipt-modal"><div className="receipt" role="dialog" aria-label="Payment receipt">
