@@ -32,6 +32,17 @@ type CustomerActivity = {
   date: string;
 };
 
+type Driver = {
+  id: string;
+  customer_id: string;
+  full_name: string;
+  date_of_birth: string | null;
+  relationship: "named_insured" | "spouse" | "child" | "other";
+  license_state: string | null;
+  license_last4: string | null;
+  license_status: "valid" | "permit" | "suspended" | "expired" | "unknown";
+};
+
 type AgencyDocument = {
   id: string;
   original_filename: string;
@@ -119,6 +130,7 @@ export default function Home() {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customerVehicles, setCustomerVehicles] = useState<Vehicle[]>([]);
   const [customerActivity, setCustomerActivity] = useState<CustomerActivity[]>([]);
+  const [customerDrivers, setCustomerDrivers] = useState<Driver[]>([]);
   const [customerMessage, setCustomerMessage] = useState("");
   const [documents, setDocuments] = useState<AgencyDocument[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -261,9 +273,10 @@ export default function Home() {
   async function openCustomer(customerId: string) {
     setCustomerMessage("");
     const supabase = createClient();
-    const [{ data: customer, error }, { data: vehicles }, { data: customerQuotes }, { data: customerPolicies }, { data: customerPayments }, { data: customerDocuments }, { data: customerTasks }] = await Promise.all([
+    const [{ data: customer, error }, { data: vehicles }, { data: drivers }, { data: customerQuotes }, { data: customerPolicies }, { data: customerPayments }, { data: customerDocuments }, { data: customerTasks }] = await Promise.all([
       supabase.from("customers").select("id,full_name,phone,email,preferred_language,address,notes,policies(carrier,status)").eq("id", customerId).single(),
       supabase.from("vehicles").select("id,customer_id,year,make,model,vin").eq("customer_id", customerId).order("created_at"),
+      supabase.from("drivers").select("id,customer_id,full_name,date_of_birth,relationship,license_state,license_last4,license_status").eq("customer_id", customerId).order("created_at"),
       supabase.from("quotes").select("id,carrier,status,monthly_payment,created_at").eq("customer_id", customerId),
       supabase.from("policies").select("id,carrier,policy_number,status,effective_date,created_at").eq("customer_id", customerId),
       supabase.from("payments").select("id,receipt_number,amount,status,created_at").eq("customer_id", customerId),
@@ -284,6 +297,7 @@ export default function Home() {
       status: row.policies?.[0]?.status === "active" ? "Active" : "New",
     });
     setCustomerVehicles((vehicles ?? []) as Vehicle[]);
+    setCustomerDrivers((drivers ?? []) as Driver[]);
     const activity: CustomerActivity[] = [
       ...(customerQuotes ?? []).map((item: any) => ({ id: `quote-${item.id}`, type: "Quote" as const, title: `${item.carrier} quote`, detail: `${item.status} · $${Number(item.monthly_payment ?? 0).toFixed(2)}/month`, date: item.created_at })),
       ...(customerPolicies ?? []).map((item: any) => ({ id: `policy-${item.id}`, type: "Policy" as const, title: `${item.carrier || "Carrier"} policy`, detail: `${item.policy_number || "No policy number"} · ${item.status}`, date: item.created_at || item.effective_date })),
@@ -341,6 +355,38 @@ export default function Home() {
     if (error) { setCustomerMessage(error.message); return; }
     setCustomerVehicles(previous => previous.filter(item => item.id !== vehicle.id));
     setCustomerMessage("Vehicle deleted.");
+  }
+
+  async function addDriver(formData: FormData) {
+    if (!selectedCustomer) return;
+    setCustomerMessage("");
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    const { data: profile } = user ? await supabase.from("profiles").select("agency_id").eq("id", user.id).single() : { data: null };
+    if (!user || !profile) return;
+    const last4 = String(formData.get("license_last4") || "").trim().toUpperCase();
+    const { data, error } = await supabase.from("drivers").insert({
+      agency_id: profile.agency_id,
+      customer_id: selectedCustomer.id,
+      full_name: String(formData.get("full_name") || "").trim(),
+      date_of_birth: String(formData.get("date_of_birth") || "") || null,
+      relationship: String(formData.get("relationship") || "named_insured"),
+      license_state: String(formData.get("license_state") || "").trim().toUpperCase() || null,
+      license_last4: last4 || null,
+      license_status: String(formData.get("license_status") || "valid"),
+      created_by: user.id,
+    }).select("id,customer_id,full_name,date_of_birth,relationship,license_state,license_last4,license_status").single();
+    if (error) { setCustomerMessage(error.message); return; }
+    if (data) setCustomerDrivers(previous => [...previous, data as Driver]);
+    setCustomerMessage("Driver added.");
+  }
+
+  async function deleteDriver(driver: Driver) {
+    if (!window.confirm(`Delete driver ${driver.full_name}?`)) return;
+    const { error } = await createClient().from("drivers").delete().eq("id", driver.id);
+    if (error) { setCustomerMessage(error.message); return; }
+    setCustomerDrivers(previous => previous.filter(item => item.id !== driver.id));
+    setCustomerMessage("Driver deleted.");
   }
 
   async function uploadDocument(formData: FormData) {
@@ -784,6 +830,9 @@ export default function Home() {
           <label className="wide">Notes<textarea name="notes" defaultValue={selectedCustomer.notes} /></label>
           <button className="gold" type="submit">Save customer</button>
         </form> : <div className="customer-summary"><div><small>Phone</small><b>{selectedCustomer.phone || "—"}</b></div><div><small>Email</small><b>{selectedCustomer.email || "—"}</b></div><div><small>Language</small><b>{selectedCustomer.preferred_language}</b></div><div><small>Address</small><b>{selectedCustomer.address || "—"}</b></div><div className="wide"><small>Notes</small><b>{selectedCustomer.notes || "—"}</b></div></div>}
+        <div className="row vehicle-heading"><h3>Drivers</h3><span className="muted">{customerDrivers.length} on file</span></div>
+        <div className="driver-list">{customerDrivers.length === 0 && <p className="muted">No drivers added.</p>}{customerDrivers.map(driver => <div className="driver-row" key={driver.id}><div><b>{driver.full_name}</b><span>{driver.relationship.replace("_", " ")} · DOB {driver.date_of_birth || "Not entered"}</span><span>License: {driver.license_state || "—"} ••••{driver.license_last4 || "—"} · {driver.license_status}</span></div>{["owner","manager"].includes(userRole) && <button className="logout" onClick={() => deleteDriver(driver)}>Delete</button>}</div>)}</div>
+        {isOperationalStaff && <form action={addDriver} className="driver-form"><label>Full name<input name="full_name" required /></label><label>Date of birth<input name="date_of_birth" type="date" /></label><label>Relationship<select name="relationship" defaultValue="named_insured"><option value="named_insured">Named insured</option><option value="spouse">Spouse</option><option value="child">Child</option><option value="other">Other</option></select></label><label>License state<input name="license_state" maxLength={2} placeholder="AL" /></label><label>License last 4<input name="license_last4" minLength={4} maxLength={4} placeholder="1234" /></label><label>Status<select name="license_status" defaultValue="valid"><option value="valid">Valid</option><option value="permit">Permit</option><option value="suspended">Suspended</option><option value="expired">Expired</option><option value="unknown">Unknown</option></select></label><button className="gold" type="submit">Add driver</button></form>}
         <div className="row vehicle-heading"><h3>Vehicles</h3><span className="muted">{customerVehicles.length} on file</span></div>
         <div className="vehicle-list">{customerVehicles.length === 0 && <p className="muted">No vehicles added.</p>}{customerVehicles.map(vehicle => <div className="vehicle-row" key={vehicle.id}><div><b>{vehicle.year ?? "—"} {vehicle.make ?? ""} {vehicle.model ?? ""}</b><span>VIN: {vehicle.vin || "Not entered"}</span></div>{isOperationalStaff && <button className="logout" onClick={() => deleteVehicle(vehicle)}>Delete</button>}</div>)}</div>
         {isOperationalStaff && <form action={addVehicle} className="vehicle-form"><label>Year<input name="year" type="number" min="1900" max="2100" /></label><label>Make<input name="make" /></label><label>Model<input name="model" /></label><label>VIN<input name="vin" maxLength={17} /></label><button className="gold" type="submit">Add vehicle</button></form>}
